@@ -1,0 +1,38 @@
+====================================================================================================
+   File SHA1 Hashes:
+====================================================================================================
+
+   07d4eb86ff38027393a904b54fa8fd7880bf8023 *slc.dll
+   023d88e8e0a125f5d85ee2d999b512c4886aab29 *arm64_slc.dll
+   fabb5a0fc1e6a372219711152291339af36ed0b5 *gatherosstate.exe
+   7e449ae5549a0d93cf65f4a1bb2aa7d1dc090d2d *arm64_gatherosstate.exe
+
+====================================================================================================
+   GatherOsState.exe (x86 and ARM64) File Sources:
+====================================================================================================
+
+ - GatherOsState.exe files are taken from Windows 10 Version 1607 ADK
+
+   How to verify it's original from Microsoft?
+
+ - Download file from the below official MS link and extract this .cab file,
+   For x86-     https://download.microsoft.com/download/9/A/E/9AE69DD5-BA93-44E0-864E-180F5E700AB4/adk/Installers/14f4df8a2a7fc82a4f415cf6a341415d.cab
+   For ARM64-   https://download.microsoft.com/download/9/A/E/9AE69DD5-BA93-44E0-864E-180F5E700AB4/adk/Installers/2e82f679c8709f838e7c839f7864ac84.cab
+
+ - Find the file named,
+   For x86-     filf8377e82b29deadca67bc4858ed3fba9
+   For ARM64-   fil5b1b0ad2f49ecc0bc53f4104512ad200
+ 
+ - Now compare their hashes with GatherOsState.exe files provided here. 
+ 
+ - It's same.
+
+====================================================================================================
+   slc.dll (x86 and ARM64) file details:
+====================================================================================================
+
+ - Source code available, you can build it in Visual Studio.
+   https://app.box.com/s/y71tpcamofcg6zv6k7by6gaex6om3q4d
+   Check the file qxkqf\clientLockboxKey.zip for the source of used slc.dll here.
+
+====================================================================================================

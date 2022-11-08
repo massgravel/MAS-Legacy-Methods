@@ -1,0 +1,18 @@
+====================================================================================================
+   GatherOsState.exe File Source:
+====================================================================================================
+
+ - GatherOsState.exe (x86) is an Official MS file taken from Windows 10 Version 1607 ADK
+
+   How to verify it's original from Microsoft?
+
+ - Download file from the below official MS link and extract this .cab file
+   https://download.microsoft.com/download/9/A/E/9AE69DD5-BA93-44E0-864E-180F5E700AB4/adk/Installers/14f4df8a2a7fc82a4f415cf6a341415d.cab
+
+ - Find the file named "filf8377e82b29deadca67bc4858ed3fba9"
+ 
+ - Now compare SHA-1: FABB5A0FC1E6A372219711152291339AF36ED0B5 with GatherOsState.exe provided here.
+ 
+ - It's same.
+
+====================================================================================================
