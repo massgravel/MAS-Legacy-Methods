@@ -65,7 +65,7 @@ pushd "%~dp0"
 >nul findstr /rxc:".*" "%~nx0"
 if not %errorlevel%==0 (
 echo:
-echo Error: This is not a correct file. It has LF line ending issue.
+echo Error: Script either has LF line ending issue, or it failed to read itself.
 echo:
 ping 127.0.0.1 -n 6 > nul
 popd
@@ -135,14 +135,15 @@ if %~z0 GEQ 200000 (set "_exitmsg=Go back") else (set "_exitmsg=Exit")
 if %winbuild% LSS 10240 (
 %eline%
 echo Unsupported OS version detected.
-echo Project is supported for Windows 10/11.
+echo HWID Activation is supported only for Windows 10/11.
+echo Use Online KMS Activation option.
 goto dk_done
 )
 
 if exist "%SystemRoot%\Servicing\Packages\Microsoft-Windows-Server*Edition~*.mum" (
 %eline%
 echo HWID Activation is not supported for Windows Server.
-echo Use KMS38 or KMS Activation.
+echo Use KMS38 or Online KMS Activation option.
 goto dk_done
 )
 
@@ -258,7 +259,7 @@ goto :dl_menu
 :dl_menu2
 
 cls
-mode 102, 37
+mode 102, 38
 set _title=title  HWID Activation
 if %_lock%==0 (%_title% [Downlevel Method]) else (%_title% [Lockbox Method])
 
@@ -300,28 +301,46 @@ cls
 
 ::========================================================================================================================================
 
+::  Check Windows Architecture 
+
+set arch=
+for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PROCESSOR_ARCHITECTURE') do set arch=%%b
+
+if not defined arch (
+%eline%
+echo Unable to detect Windows Architecture. Aborting...
+goto dk_done
+)
+
+::========================================================================================================================================
+
 ::  Check files
 
-if not exist "!_work!\BIN\gatherosstate.exe" (
+set ARM64_file=
+if /i "%arch%"=="ARM64" set ARM64_file=arm64_
+
+for %%# in (%ARM64_file%gatherosstate.exe %ARM64_file%slc.dll) do (
+if not exist "!_work!\BIN\%%#" (
 %eline%
-echo 'gatherosstate.exe' file is missing in 'BIN' folder. Aborting...
+echo '%%#' file is missing in 'BIN' folder. Aborting...
 goto dk_done
+)
 )
 
 ::  Verify gatherosstate.exe file
 
 set _hash=
-for /f "skip=1 tokens=* delims=" %%# in ('certutil -hashfile "!_work!\BIN\gatherosstate.exe" SHA1^|findstr /i /v CertUtil') do set "_hash=%%#"
+if /i "%arch%"=="ARM64" (set _orig=7E449AE5549A0D93CF65F4A1BB2AA7D1DC090D2D) else (set _orig=FABB5A0FC1E6A372219711152291339AF36ED0B5)
+for /f "skip=1 tokens=* delims=" %%# in ('certutil -hashfile "!_work!\BIN\%ARM64_file%gatherosstate.exe" SHA1^|findstr /i /v CertUtil') do set "_hash=%%#"
 set "_hash=%_hash: =%"
 
-if /i not "%_hash%"=="FABB5A0FC1E6A372219711152291339AF36ED0B5" (
-if /i not "%_hash%"=="0CC709275767E0AA7BD69236E364A45E66AAD9AB" (
+if /i not "%_hash%"=="%_orig%" (
 %eline%
-echo gatherosstate.exe SHA1 hash mismatch found.
+echo %ARM64_file%gatherosstate.exe SHA1 hash mismatch found.
 echo:
+echo Expected: %_orig%
 echo Detected: %_hash%
 goto dk_done
-)
 )
 
 ::========================================================================================================================================
@@ -332,9 +351,12 @@ if exist "%SystemRoot%\Servicing\Packages\Microsoft-Windows-*EvalEdition~*.mum" 
 reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v EditionID 2>nul | find /i "Eval" 1>nul && (
 %eline%
 echo [%winos% ^| %winbuild%]
-echo Evaluation Editions cannot be activated. Download ^& Install full version of Windows OS.
 echo:
-echo https://massgrave.dev/
+echo Evaluation Editions cannot be activated. 
+echo You need to install full version of %winos%
+echo:
+echo Download it from here,
+echo https://massgrave.dev/genuine-installation-media.html
 goto dk_done
 )
 )
@@ -364,27 +386,28 @@ goto dk_done
 
 set error=
 
-::  Check Internet connection
-
 cls
 echo:
 for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PROCESSOR_ARCHITECTURE') do set arch=%%b
 echo Checking OS Info                        [%winos% ^| %winbuild% ^| %arch%]
 
-set _intcon=
-for /f "delims=[] tokens=2" %%# in ('ping -n 1 licensing.mp.microsoft.com') do if not [%%#]==[] set _intcon=1
+::  Check Internet connection
 
-%psc% "$t = New-Object Net.Sockets.TcpClient;try{$t.Connect("""licensing.mp.microsoft.com""", 443)}catch{};$t.Connected" | findstr /i true 1>nul
-if %errorlevel% EQU 0 (
+set _int=
+for %%a in (l.root-servers.net resolver1.opendns.com download.windowsupdate.com google.com) do if not defined _int (
+for /f "delims=[] tokens=2" %%# in ('ping -n 1 %%a') do (if not [%%#]==[] set _int=1)
+)
+
+if not defined _int (
+%psc% "If([Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'{DCB00C01-570F-4A9B-8D69-199FDBA5723B}')).IsConnectedToInternet){Exit 0}Else{Exit 1}"
+if !errorlevel!==0 set _int=1
+)
+
+if defined _int (
 echo Checking Internet Connection            [Connected]
 ) else (
 set error=1
-if defined _intcon (
-call :dk_color %Red% "Checking Internet Connection            [Internet Found But Cant Connect licensing.mp.microsoft.com]"
-call :dk_color %Magenta% "Make sure restricted Internet [Office/College] is not connected and URL is not blocked in the system"
-) else (
 call :dk_color %Red% "Checking Internet Connection            [Not Connected]"
-)
 )
 
 ::========================================================================================================================================
@@ -406,185 +429,40 @@ echo Enabling Windows Script Host            [Successful]
 
 echo Initiating Diagnostic Tests...
 
-set "_serv=ClipSVC wlidsvc sppsvc LicenseManager Winmgmt wuauserv"
+set "_serv=ClipSVC wlidsvc sppsvc KeyIso LicenseManager Winmgmt wuauserv"
 
 ::  Client License Service (ClipSVC)
 ::  Microsoft Account Sign-in Assistant
 ::  Software Protection
+::  CNG Key Isolation
 ::  Windows License Manager Service
 ::  Windows Management Instrumentation
 ::  Windows Update
 
-::  Check disabled services
+call :dk_errorcheck
 
-set serv_ste=
-for %%# in (%_serv%) do (
-set serv_dis=
-reg query HKLM\SYSTEM\CurrentControlSet\Services\%%# /v Start %nul% || set serv_dis=1
-for /f "skip=2 tokens=2*" %%a in ('reg query HKLM\SYSTEM\CurrentControlSet\Services\%%# /v Start 2^>nul') do if /i %%b equ 0x4 set serv_dis=1
-if defined serv_dis (if defined serv_ste (set "serv_ste=!serv_ste! %%#") else (set "serv_ste=%%#"))
+::  Check Windows updates and store app blockers
+
+set updatesblock=
+echo: %serv_ste% | findstr /i "wuauserv" %nul% && set updatesblock=1
+for /f "skip=2 tokens=2*" %%a in ('reg query HKLM\SYSTEM\CurrentControlSet\Services\UsoSvc /v Start 2^>nul') do if /i %%b equ 0x4 set updatesblock=1
+if exist "%SystemRoot%\System32\WaaSMedicSvc.dll" (
+for /f "skip=2 tokens=2*" %%a in ('reg query HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc /v Start 2^>nul') do if /i %%b equ 0x4 set updatesblock=1
 )
 
-::  Change disabled services startup type to default
+reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer /v SettingsPageVisibility 2>nul | find /i "windowsupdate" %nul% && set updatesblock=1
+reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdateSysprepInProgress %nul% && set updatesblock=1
+reg query HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate /s 2>nul | findstr /i "NoAutoUpdate DisableWindowsUpdateAccess" %nul% && set updatesblock=1
 
-set serv_csts=
-set serv_cste=
-
-if defined serv_ste (
-for %%# in (%serv_ste%) do (
-if /i %%#==ClipSVC        (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "3" /f %nul% & sc config %%# start= demand %nul%)
-if /i %%#==wlidsvc        sc config %%# start= demand %nul%
-if /i %%#==sppsvc         (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "2" /f %nul% & sc config %%# start= delayed-auto %nul%)
-if /i %%#==LicenseManager sc config %%# start= demand %nul%
-if /i %%#==Winmgmt        sc config %%# start= auto %nul%
-if /i %%#==wuauserv       sc config %%# start= demand %nul%
-if !errorlevel!==0 (
-if defined serv_csts (set "serv_csts=!serv_csts! %%#") else (set "serv_csts=%%#")
-) else (
-set error=1
-if defined serv_cste (set "serv_cste=!serv_cste! %%#") else (set "serv_cste=%%#")
-)
+if defined updatesblock (
+call :dk_color %Gray% "Checking Windows Update Blockers        [Found]"
+if defined applist echo: %serv_e% | find /i "wuauserv" %nul% && (
+call :dk_color %Magenta% "Windows Update Service [wuauserv] is not working. Enable it incase if you have disabled it."
 )
 )
 
-if defined serv_csts echo Enabling Disabled Services              [Successful] [%serv_csts%]
-
-if defined serv_cste (
-echo %serv_cste% | findstr /i "ClipSVC sppsvc" %nul% && (
-call :dk_color %Red% "Enabling Disabled Services              [Failed] [%serv_cste%] [Restart System]"
-) || (
-call :dk_color %Red% "Enabling Disabled Services              [Failed] [%serv_cste%]"
-)
-)
-
-::========================================================================================================================================
-
-::  Check if the services are able to run or not
-::  Workarounds are added to get correct status and error code because sc query doesn't output correct results in some conditions
-
-set serv_e=
-for %%# in (%_serv%) do (
-set errorcode=
-set checkerror=
-net start %%# /y %nul%
-sc query %%# | find /i "4  RUNNING" %nul% || set checkerror=1
-
-sc start %%# %nul%
-set errorcode=!errorlevel!
-if !errorcode! NEQ 1056 if !errorcode! NEQ 0 set checkerror=1
-if defined checkerror if defined serv_e (set "serv_e=!serv_e!, %%#-!errorcode!") else (set "serv_e=%%#-!errorcode!")
-)
-
-if defined serv_e (
-set error=1
-call :dk_color %Red% "Starting Services                       [Failed] [%serv_e%]"
-)
-
-::========================================================================================================================================
-
-::  Various error checks
-
-for %%# in (wmic.exe) do @if "%%~$PATH:#"=="" (
-call :dk_color %Gray% "Checking WMIC.exe                       [Not Found]"
-)
-
-
-%psc% $ExecutionContext.SessionState.LanguageMode 2>nul | find /i "Full" 1>nul || (
-set error=1
-call :dk_color %Red% "Checking Powershell                     [Not Responding]"
-)
-
-
-if %_wmic% EQU 1 wmic path Win32_ComputerSystem get CreationClassName /value 2>nul | find /i "computersystem" 1>nul
-if %_wmic% EQU 0 %psc% "Get-CIMInstance -Class Win32_ComputerSystem | Select-Object -Property CreationClassName" 2>nul | find /i "computersystem" 1>nul
-if %errorlevel% NEQ 0 (
-set error=1
-call :dk_color %Red% "Checking WMI                            [Not Responding] %_wmic%"
-)
-
-
-if not "%regSKU%"=="%wmiSKU%" (
-set error=1
-call :dk_color %Red% "Checking WMI/REG SKU                    [Difference Found - WMI:%wmiSKU% Reg:%regSKU%]"
-)
-
-
-DISM /English /Online /Get-CurrentEdition %nul%
-set error_code=%errorlevel%
-cmd /c exit /b %error_code%
-if %error_code% NEQ 0 set "error_code=[0x%=ExitCode%]"
-if %error_code% NEQ 0 (
-call :dk_color %Red% "Checking DISM                           [Not Responding] %error_code%"
-)
-
-
-if exist "%SystemRoot%\Servicing\Packages\Microsoft-Windows-*EvalEdition~*.mum" (
-call :dk_color %Red% "Checking Eval Packages                  [Non-Eval Licenses are installed in Eval Windows]"
-)
-
-
-cscript //nologo %windir%\system32\slmgr.vbs /dlv %nul%
-set error_code=%errorlevel%
-cmd /c exit /b %error_code%
-if %error_code% NEQ 0 set "error_code=0x%=ExitCode%"
-if %error_code% NEQ 0 (
-set error=1
-call :dk_color %Red% "Checking slmgr /dlv                     [Not Responding] %error_code%"
-)
-
-
-reg query "HKU\S-1-5-20\Software\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform\PersistedTSReArmed" %nul% && (
-set error=1
-call :dk_color %Red% "Checking Rearm                          [System Restart Is Required]"
-)
-
-
-reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ClipSVC\Volatile\PersistedSystemState" %nul% && (
-set error=1
-call :dk_color %Red% "Checking ClipSVC                        [System Restart Is Required]"
-)
-
-
-for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" 2^>nul') do if /i %%b NEQ 0x0 (
-reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" /t REG_DWORD /d "0" /f %nul%
-call :dk_color %Red% "Checking SkipRearm                      [Default 0 Value Not Found, Changing To 0]"
-net stop sppsvc /y %nul%
-net start sppsvc /y %nul%
-set error=1
-)
-
-
-call :dk_actids
-if not defined applist (
-net stop sppsvc /y %nul%
-cscript //nologo %windir%\system32\slmgr.vbs /rilc %nul%
-if !errorlevel! NEQ 0 cscript //nologo %windir%\system32\slmgr.vbs /rilc %nul%
-call :dk_refresh
-call :dk_actids
-if not defined applist (
-set error=1
-call :dk_color %Red% "Checking Activation IDs                 [Not Found]"
-)
-)
-
-
-set token=0
-if exist %Systemdrive%\Windows\System32\spp\store\2.0\tokens.dat set token=1
-if exist %Systemdrive%\Windows\System32\spp\store_test\2.0\tokens.dat set token=1
-if %token%==0 (
-set error=1
-call :dk_color %Red% "Checking SPP tokens.dat                 [Not Found]"
-)
-
-if not exist %SystemRoot%\system32\sppsvc.exe (
-set error=1
-call :dk_color %Red% "Checking sppsvc.exe File                [Not Found]"
-)
-
-if /i %error_code% EQU 0xc0000022 (
-echo "%serv_e%" | find /i "sppsvc" %nul% && (
-call :dk_color %Magenta% "Looks like you may have used a Gaming spoofer. Check Activation Troubleshoot option in MAS."
-)
+reg query "HKLM\SOFTWARE\Policies\Microsoft\WindowsStore" /v DisableStoreApps 2>nul | find /i "0x1" %nul% && (
+call :dk_color %Gray% "Checking Store App Blocker              [Found]"
 )
 
 ::========================================================================================================================================
@@ -592,7 +470,6 @@ call :dk_color %Magenta% "Looks like you may have used a Gaming spoofer. Check A
 ::  Detect Key
 
 set key=
-set pfn=
 set altkey=
 set changekey=
 set curedition=
@@ -613,7 +490,8 @@ if defined altkey (set key=%altkey%&set changekey=1&set notworking=)
 if defined notworking if defined notfoundaltactID (
 call :dk_color %Red% "Checking Alternate Edition For HWID     [%altedition% Activation ID Not Found]"
 if exist "%SystemRoot%\Servicing\Packages\Microsoft-Windows-*EvalEdition~*.mum" (
-call :dk_color %Magenta% "Evaluation Windows Found. Install Full version of Windows. https://massgrave.dev/"
+call :dk_color %Magenta% "Evaluation Windows Found. Install Full version of %winos%"
+call :dk_color %Magenta% "Download it from https://massgrave.dev/genuine-installation-media.html"
 )
 )
 
@@ -626,6 +504,8 @@ echo https://massgrave.dev
 echo:
 goto dk_done
 )
+
+if defined notworking set error=1
 
 ::========================================================================================================================================
 
@@ -648,9 +528,13 @@ if %errorcode% EQU 0 (
 call :dk_refresh
 echo Installing Generic Product Key          [%key%] [Successful]
 ) else (
-set error=1
 call :dk_color %Red% "Installing Generic Product Key          [%key%] [Failed] %errorcode%"
-if defined applist if defined actidnotfound call :dk_color %Red% "Activation ID not found for this key. Make sure you are using updated version of MAS."
+if not defined error (
+call :dk_color %Magenta% "In MAS, Goto Troubleshoot and run Fix Licensing option."
+if defined actidnotfound call :dk_color %Red% "Activation ID not found for this key. Make sure you are using updated version of MAS."
+set showfix=1
+)
+set error=1
 )
 
 ::========================================================================================================================================
@@ -663,10 +547,15 @@ if exist "%temp_%\.*" rmdir /s /q "%temp_%\" %nul%
 md "%temp_%\" %nul%
 
 pushd "!_work!\BIN\"
-copy /y /b "gatherosstate.exe" "%temp_%\gatherosstate.exe" %nul%
+copy /y /b "%ARM64_file%gatherosstate.exe" "%temp_%\gatherosstate.exe" %nul%
+copy /y /b "%ARM64_file%slc.dll" "%temp_%\slc.dll" %nul%
 popd
 
-if not exist "%temp_%\gatherosstate.exe" (
+set copyf=
+if not exist "%temp_%\gatherosstate.exe" set copyf=1
+if not exist "%temp_%\slc.dll" set copyf=1
+
+if defined copyf (
 call :dk_color %Red% "Copying Required Files to Temp          [%temp_%] [Failed]"
 goto :dl_final
 ) else (
@@ -675,35 +564,18 @@ echo Copying Required Files to Temp          [%temp_%] [Successful]
 
 ::========================================================================================================================================
 
-if /i "%_hash%"=="0CC709275767E0AA7BD69236E364A45E66AAD9AB" (
-echo Checking gatherosstate.exe              [Already Modified]
-%nul% ren "%temp_%\gatherosstate.exe" "gatherosstatemodified.exe"
-goto :dlskipmod
-)
-
-::  Modify gatherosstate.exe
+::  Modify the Pfn value in gatherosstate with slc.dll as per the system, that way one gatherosstate can be used in all the editions
 
 pushd "%temp_%\"
-%nul% %psc% "$f=[io.file]::ReadAllText('!_batp!') -split ':hex\:.*';iex ($f[1]);"
+rundll32 "%temp_%\slc.dll",PatchGatherosstate %nul%
 popd
-
 if not exist "%temp_%\gatherosstatemodified.exe" (
 call :dk_color %Red% "Creating Modified Gatherosstate         [Failed] Aborting..."
-goto :dl_final
-)
-
-set _hash=
-for /f "skip=1 tokens=* delims=" %%# in ('certutil -hashfile "%temp_%\gatherosstatemodified.exe" SHA1^|findstr /i /v CertUtil') do set "_hash=%%#"
-set "_hash=%_hash: =%"
-
-if /i not "%_hash%"=="0CC709275767E0AA7BD69236E364A45E66AAD9AB" (
-call :dk_color %Red% "Creating Modified Gatherosstate         [Failed] [Hash Not Matched] Aborting..."
+call :dk_color %Magenta% "Most likely Antivirus blocked the process, disable it and/or create proper exclsuions"
 goto :dl_final
 ) else (
 echo Creating Modified Gatherosstate         [Successful]
 )
-
-:dlskipmod
 
 ::========================================================================================================================================
 
@@ -767,10 +639,10 @@ echo Deleting a Registry                     [Successful] [%_ident%]
 echo:
 set "_noxml=if not exist "%temp_%\GenuineTicket.xml""
 
-"%temp_%/gatherosstatemodified.exe" Pfn=%pfn%;DownlevelGenuineState=1
+"%temp_%/gatherosstatemodified.exe"
 %_noxml% timeout /t 3 %nul%
 %_noxml% net stop sppsvc /y %nul%
-%_noxml% call "%temp_%/gatherosstatemodified.exe" Pfn=%pfn%;DownlevelGenuineState=1
+%_noxml% call "%temp_%/gatherosstatemodified.exe"
 %_noxml% timeout /t 3 %nul%
 
 ::  Refresh ClipSVC (required after cleanup) with below command, not related to generating tickets
@@ -781,7 +653,7 @@ call :dk_refresh
 )
 
 %_noxml% (
-call :dk_color %Red% "Generating GenuineTicket.xml            [Failed] [%pfn%]"
+call :dk_color %Red% "Generating GenuineTicket.xml            [Failed]"
 goto :dl_final
 )
 
@@ -789,7 +661,7 @@ if %_lock%==1 (
 find /i "clientLockboxKey" "%temp_%\GenuineTicket.xml" >nul && (
 echo Generating GenuineTicket.xml            [Successful] [clientLockboxKey Ticket Created]
 ) || (
-call :dk_color %Red% "Generating GenuineTicket.xml            [Failed] [%pfn%]"
+call :dk_color %Red% "Generating GenuineTicket.xml            [Failed]"
 call :dk_color %Red% "downlevelGTkey Ticket created. Aborting..."
 goto :dl_final
 )
@@ -807,7 +679,7 @@ for /f "skip=2 tokens=2*" %%a in ('reg query "HKCU\Control Panel\International\G
 set regionchange=
 if not "%name%"=="US" (
 set regionchange=1
-%psc% Set-WinHomeLocation -GeoId 244
+%psc% "Set-WinHomeLocation -GeoId 244" %nul%
 if !errorlevel! EQU 0 (
 echo Changing Windows Region To USA          [Successful]
 ) else (
@@ -818,11 +690,12 @@ call :dk_color %Red% "Changing Windows Region To USA          [Failed]"
 ::==========================================================================================================================================
 
 ::  Generate GenuineTicket.xml and apply
-::  Most correct way to apply a ticket is by restarting ClipSVC service but we can not check the log details in this way
-::  To get the log details and also to correctly apply ticket, script will install tickets two times (service restart + clipup -v -o)
+::  In some cases clipup -v -o method fails and in some cases service restart method fails as well
+::  To maximize success rate and get better error details, script will install tickets two times (service restart + clipup -v -o)
 
 set "tdir=%ProgramData%\Microsoft\Windows\ClipSVC\GenuineTicket"
 if exist "%tdir%\*.xml" del /f /q "%tdir%\*.xml" %nul%
+if exist "%ProgramData%\Microsoft\Windows\ClipSVC\Install\Migration\*" del /f /q "%ProgramData%\Microsoft\Windows\ClipSVC\Install\Migration\*" %nul%
 if not exist "%tdir%\" md "%tdir%\" %nul%
 copy /y /b "%temp_%\GenuineTicket.xml" "%tdir%\GenuineTicket.xml" %nul%
 
@@ -839,6 +712,7 @@ net start ClipSVC /y %nul%
 %_xmlexist% timeout /t 2 %nul%
 
 %_xmlexist% (
+set error=1
 if exist "%tdir%\*.xml" del /f /q "%tdir%\*.xml" %nul%
 call :dk_color %Red% "Installing GenuineTicket.xml            [Failed With ClipSVC Service Restart, Wait...]"
 )
@@ -846,26 +720,75 @@ call :dk_color %Red% "Installing GenuineTicket.xml            [Failed With ClipS
 
 clipup -v -o -altto %temp_%\
 
+set rebuildinfo=
+
+if exist %temp_%\GenuineTicket.xml (
+set error=1
+set rebuildinfo=1
+call :dk_color %Red% "Installing GenuineTicket.xml            [Failed With clipup -v -o]"
+)
+
+if exist "%ProgramData%\Microsoft\Windows\ClipSVC\Install\Migration\*.xml" (
+set error=1
+set rebuildinfo=1
+call :dk_color %Red% "Checking Ticket Migration               [Failed]"
+)
+
+if defined applist if not defined showfix if defined rebuildinfo (
+set showfix=1
+call :dk_color %Magenta% "In MAS, Goto Troubleshoot and run Fix Licensing option."
+)
+
 ::==========================================================================================================================================
 
 call :dk_product
 
 echo:
 echo Activating...
-echo:
 
 call :dk_act
 call :dk_checkperm
 if defined _perm (
-call :dk_color %Green% "%winos% is permanently activated."
+echo:
+call :dk_color %Green% "%winos% is permanently activated with a digital license."
 goto :dl_final
 )
 
+::  Extended licensing servers tests incase error not found and activation failed
 
+set resfail=
 if not defined error (
 
-REM Clear store ID related registry to fix activation incase if there is any corruption
+ipconfig /flushdns %nul%
+set "tls=$Tls12 = [Enum]::ToObject([System.Net.SecurityProtocolType], 3072); [System.Net.ServicePointManager]::SecurityProtocol = $Tls12;"
 
+for %%# in (
+login.live.com/ppsecure/deviceaddcredential.srf
+purchase.mp.microsoft.com/v7.0/users/me/orders
+) do if not defined resfail (
+set "d1=Add-Type -AssemblyName System.Net.Http;"
+set "d1=!d1! $client = [System.Net.Http.HttpClient]::new();"
+set "d1=!d1! $response = $client.GetAsync('https://%%#').GetAwaiter().GetResult();"
+set "d1=!d1! $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()"
+%psc% "!tls! !d1!" 2>nul | findstr /i "PurchaseFD DeviceAddResponse" 1>nul || set resfail=1
+)
+
+if not defined resfail (
+%psc% "!tls! irm https://licensing.mp.microsoft.com/v7.0/licenses/content -Method POST" | find /i "traceId" 1>nul || set resfail=1
+)
+
+if defined resfail (
+set error=1
+echo:
+call :dk_color %Red% "Checking Licensing Servers              [Failed To Connect]"
+call :dk_color2 %Magenta% "Check this page for help" %_Yellow% " https://massgrave.dev/licensing-servers-issue"
+)
+)
+
+::  Clear store ID related registry to fix activation incase error not found
+
+if not defined error (
+echo:
 set "_ident=HKU\S-1-5-19\SOFTWARE\Microsoft\IdentityCRL"
 reg delete "!_ident!" /f %nul%
 reg query "!_ident!" %nul% && (
@@ -882,13 +805,16 @@ call :dk_act
 call :dk_checkperm
 )
 
+echo:
 if defined _perm (
-call :dk_color %Green% "%winos% is permanently activated."
+call :dk_color %Green% "%winos% is permanently activated with a digital license."
 ) else (
 call :dk_color %Red% "Activation Failed %error_code%"
 if defined notworking (
 call :dk_color %Magenta% "At the time of writing this, HWID Activation was not supported for this product."
+call :dk_color %Magenta% "Use KMS38 Activation option."
 ) else (
+if not defined error call :dk_color %Magenta% "In MAS, Goto Troubleshoot and run Fix Licensing option."
 call :dk_color2 %Magenta% "Check this page for help" %_Yellow% " https://massgrave.dev/troubleshoot"
 )
 )
@@ -906,15 +832,15 @@ echo Cleaning Temp Files                     [Successful]
 )
 
 if defined regionchange (
-%psc% Set-WinHomeLocation -GeoId %nation%
+%psc% "Set-WinHomeLocation -GeoId %nation%" %nul%
 if !errorlevel! EQU 0 (
 echo Restoring Windows Region                [Successful]
 ) else (
-call :dk_color %Red% "Restoring Windows Region                [Failed] [%name%-%nation%]"
+call :dk_color %Red% "Restoring Windows Region                [Failed] [%name% - %nation%]"
 )
 )
 
-if %osSKU%==175 call :dk_color %Red% "ServerRdsh Editon does not officially support activation on non-azure platforms."
+if %osSKU%==175 call :dk_color %Red% "%winos% does not support activation on non-azure platforms."
 
 goto :dk_done
 
@@ -922,35 +848,19 @@ goto :dk_done
 
 :regownstart
 
-setlocal
-set "TMP=%SystemRoot%\Temp"
-set "TEMP=%SystemRoot%\Temp"
 %psc% "$f=[io.file]::ReadAllText('!_batp!') -split ':regown\:.*';iex ($f[1]);"
-endlocal
 exit /b
 
-::  Below code runs only if Lockbox method is manually set by the user in this script
-::  It takes ownership of a volatile registry key and deletes it, which gets created in Lockbox method
-
-::  Thanks to Remko Weijnen for the code and thanks to abbodi1406 for the help
-::  remkoweijnen.nl/blog/2012/01/16/take-ownership-of-a-registry-key-in-powershell/
+::  Below code takes ownership of a volatile registry key and deletes it
+::  HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ClipSVC\Volatile\PersistedSystemState
 
 :regown:
-$definition = @"
-using System;
-using System.Runtime.InteropServices;
-namespace Win32Api
-{
-    public class NtDll
-    {
-        [DllImport("ntdll.dll", EntryPoint="RtlAdjustPrivilege")]
-        public static extern int RtlAdjustPrivilege(int Privilege, bool Enable, bool CurrentThread, ref bool Enabled);
-    }
-}
-"@
+$AssemblyBuilder = [AppDomain]::CurrentDomain.DefineDynamicAssembly(4, 1)
+$ModuleBuilder = $AssemblyBuilder.DefineDynamicModule(2, $False)
+$TypeBuilder = $ModuleBuilder.DefineType(0)
 
-Add-Type -TypeDefinition $definition -PassThru | Out-Null
-[Win32Api.NtDll]::RtlAdjustPrivilege(9, $true, $false, [ref]$false) | Out-Null
+$TypeBuilder.DefinePInvokeMethod('RtlAdjustPrivilege', 'ntdll.dll', 'Public, Static', 1, [int], @([int], [bool], [bool], [bool].MakeByRefType()), 1, 3) | Out-Null
+$TypeBuilder.CreateType()::RtlAdjustPrivilege(9, $true, $false, [ref]$false) | Out-Null
 
 $SID = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
 $IDN = ($SID.Translate([System.Security.Principal.NTAccount])).Value
@@ -1009,22 +919,6 @@ if %_wmic% EQU 0 set "chkapp=for /f "tokens=2 delims==" %%a in ('%psc% "(([WMISE
 %chkapp% do (if defined applist (call set "applist=!applist! %%a") else (call set "applist=%%a"))
 exit /b
 
-::  Get Product name (WMI/REG methods are not reliable in all conditions, hence winbrand.dll method is used)
-
-:dk_product
-
-set winos=
-set d1=[DllImport(\"winbrand\",CharSet=CharSet.Unicode)]public static extern string BrandingFormatString(string s);
-set d2=$AP=Add-Type -Member '%d1%' -Name D1 -PassThru; $AP::BrandingFormatString('%%WINDOWS_LONG%%')
-for /f "delims=" %%s in ('"%psc% %d2%"') do if not errorlevel 1 (set winos=%%s)
-echo "%winos%" | find /i "Windows" 1>nul || (
-for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v ProductName 2^>nul') do set "winos=%%b"
-if %winbuild% GEQ 22000 (
-set winos=!winos:Windows 10=Windows 11!
-)
-)
-exit /b
-
 ::  Check wmic.exe
 
 :dk_ckeckwmic
@@ -1033,6 +927,286 @@ set _wmic=0
 for %%# in (wmic.exe) do @if not "%%~$PATH:#"=="" (
 wmic path Win32_ComputerSystem get CreationClassName /value 2>nul | find /i "computersystem" 1>nul && set _wmic=1
 )
+exit /b
+
+::  Get Product name (WMI/REG methods are not reliable in all conditions, hence winbrand.dll method is used)
+
+:dk_product
+
+call :dk_reflection
+
+set d1=%ref% $meth = $TypeBuilder.DefinePInvokeMethod('BrandingFormatString', 'winbrand.dll', 'Public, Static', 1, [String], @([String]), 1, 3);
+set d1=%d1% $meth.SetImplementationFlags(128); $TypeBuilder.CreateType()::BrandingFormatString('%%WINDOWS_LONG%%')
+
+set winos=
+for /f "delims=" %%s in ('"%psc% %d1%"') do if not errorlevel 1 (set winos=%%s)
+echo "%winos%" | find /i "Windows" 1>nul || (
+for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v ProductName 2^>nul') do set "winos=%%b"
+if %winbuild% GEQ 22000 (
+set winos=!winos:Windows 10=Windows 11!
+)
+)
+exit /b
+
+::  Common lines used in PowerShell reflection code
+
+:dk_reflection
+
+set ref=$AssemblyBuilder = [AppDomain]::CurrentDomain.DefineDynamicAssembly(4, 1);
+set ref=%ref% $ModuleBuilder = $AssemblyBuilder.DefineDynamicModule(2, $False);
+set ref=%ref% $TypeBuilder = $ModuleBuilder.DefineType(0);
+exit /b
+
+::========================================================================================================================================
+
+:dk_errorcheck
+
+::  Check disabled services
+
+set serv_ste=
+for %%# in (%_serv%) do (
+set serv_dis=
+reg query HKLM\SYSTEM\CurrentControlSet\Services\%%# /v ImagePath %nul% || set serv_dis=1
+for /f "skip=2 tokens=2*" %%a in ('reg query HKLM\SYSTEM\CurrentControlSet\Services\%%# /v Start 2^>nul') do if /i %%b equ 0x4 set serv_dis=1
+sc start %%# %nul%
+if !errorlevel! EQU 1058 set serv_dis=1
+sc query %%# %nul% || set serv_dis=1
+if defined serv_dis (if defined serv_ste (set "serv_ste=!serv_ste! %%#") else (set "serv_ste=%%#"))
+)
+
+::  Change disabled services startup type to default
+
+set serv_csts=
+set serv_cste=
+
+if defined serv_ste (
+for %%# in (%serv_ste%) do (
+if /i %%#==ClipSVC        (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "3" /f %nul% & sc config %%# start= demand %nul%)
+if /i %%#==wlidsvc        sc config %%# start= demand %nul%
+if /i %%#==sppsvc         (reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%#" /v "Start" /t REG_DWORD /d "2" /f %nul% & sc config %%# start= delayed-auto %nul%)
+if /i %%#==KeyIso         sc config %%# start= demand %nul%
+if /i %%#==LicenseManager sc config %%# start= demand %nul%
+if /i %%#==Winmgmt        sc config %%# start= auto %nul%
+if /i %%#==wuauserv       sc config %%# start= demand %nul%
+if !errorlevel!==0 (
+if defined serv_csts (set "serv_csts=!serv_csts! %%#") else (set "serv_csts=%%#")
+) else (
+if defined serv_cste (set "serv_cste=!serv_cste! %%#") else (set "serv_cste=%%#")
+)
+)
+)
+
+if defined serv_csts call :dk_color %Gray% "Enabling Disabled Services              [Successful] [%serv_csts%]"
+
+if defined serv_cste (
+set error=1
+call :dk_color %Red% "Enabling Disabled Services              [Failed] [%serv_cste%]"
+)
+
+::========================================================================================================================================
+
+::  Check if the services are able to run or not
+::  Workarounds are added to get correct status and error code because sc query doesn't output correct results in some conditions
+
+set serv_e=
+for %%# in (%_serv%) do (
+set errorcode=
+set checkerror=
+net start %%# /y %nul%
+set errorcode=!errorlevel!
+sc query %%# | find /i "4  RUNNING" %nul% || set checkerror=1
+
+sc start %%# %nul%
+if !errorlevel! NEQ 1056 if !errorlevel! NEQ 0 (set errorcode=!errorlevel!&set checkerror=1)
+if defined checkerror if defined serv_e (set "serv_e=!serv_e!, %%#-!errorcode!") else (set "serv_e=%%#-!errorcode!")
+)
+
+if defined serv_e (
+set error=1
+call :dk_color %Red% "Starting Services                       [Failed] [%serv_e%]"
+echo %serv_e% | findstr /i "ClipSVC-1058 sppsvc-1058" %nul% && (
+call :dk_color %Magenta% "Restart the system to fix disabled service error 1058."
+)
+)
+
+::========================================================================================================================================
+
+::  Various error checks
+
+if defined safeboot_option (
+set error=1
+call :dk_color2 %Red% "Checking Boot Mode                      " %Magenta% "[System is running in safe mode. Run in normal mode.]"
+)
+
+
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State" 2>nul | find /i "IMAGE_STATE_COMPLETE" 1>nul || (
+set error=1
+call :dk_color2 %Red% "Checking Audit Mode                     " %Magenta% "[System is running in Audit mode. Run in normal mode.]"
+)
+
+
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\WinPE" /v InstRoot %nul% && (
+set error=1
+call :dk_color2 %Red% "Checking WinPE                          " %Magenta% "[System is running in WinPE mode. Run in normal mode.]"
+)
+
+
+for %%# in (wmic.exe) do @if "%%~$PATH:#"=="" (
+call :dk_color %Gray% "Checking WMIC.exe                       [Not Found]"
+)
+
+
+%psc% $ExecutionContext.SessionState.LanguageMode 2>nul | find /i "Full" 1>nul || (
+set error=1
+call :dk_color %Red% "Checking Powershell                     [Not Responding]"
+)
+
+
+set wmifailed=
+if %_wmic% EQU 1 wmic path Win32_ComputerSystem get CreationClassName /value 2>nul | find /i "computersystem" 1>nul
+if %_wmic% EQU 0 %psc% "Get-CIMInstance -Class Win32_ComputerSystem | Select-Object -Property CreationClassName" 2>nul | find /i "computersystem" 1>nul
+if %errorlevel% NEQ 0 (
+set error=1
+set wmifailed=1
+call :dk_color %Red% "Checking WMI                            [Not Responding] %_wmic%"
+call :dk_color %Magenta% "In MAS, Goto Troubleshoot and run Fix WMI option."
+)
+
+
+if not "%regSKU%"=="%wmiSKU%" (
+call :dk_color %Red% "Checking WMI/REG SKU                    [Difference Found - WMI:%wmiSKU% Reg:%regSKU%]"
+)
+
+
+DISM /English /Online /Get-CurrentEdition %nul%
+set error_code=%errorlevel%
+cmd /c exit /b %error_code%
+if %error_code% NEQ 0 set "error_code=[0x%=ExitCode%]"
+if %error_code% NEQ 0 (
+call :dk_color %Red% "Checking DISM                           [Not Responding] %error_code%"
+)
+
+
+if exist "%SystemRoot%\Servicing\Packages\Microsoft-Windows-*EvalEdition~*.mum" (
+set error=1
+call :dk_color %Red% "Checking Eval Packages                  [Non-Eval Licenses are installed in Eval Windows]"
+)
+
+
+cscript //nologo %windir%\system32\slmgr.vbs /dlv %nul%
+set error_code=%errorlevel%
+cmd /c exit /b %error_code%
+if %error_code% NEQ 0 set "error_code=0x%=ExitCode%"
+if %error_code% NEQ 0 (
+set error=1
+call :dk_color %Red% "Checking slmgr /dlv                     [Not Responding] %error_code%"
+)
+
+
+reg query "HKU\S-1-5-20\Software\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform\PersistedTSReArmed" %nul% && (
+set error=1
+call :dk_color2 %Red% "Checking Rearm                          " %Magenta% "[System Restart Is Required]"
+)
+
+
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ClipSVC\Volatile\PersistedSystemState" %nul% && (
+set error=1
+call :dk_color2 %Red% "Checking ClipSVC                        " %Magenta% "[System Restart Is Required]"
+)
+
+
+for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" 2^>nul') do if /i %%b NEQ 0x0 (
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v "SkipRearm" /t REG_DWORD /d "0" /f %nul%
+call :dk_color %Red% "Checking SkipRearm                      [Default 0 Value Not Found, Changing To 0]"
+net stop sppsvc /y %nul%
+net start sppsvc /y %nul%
+set error=1
+)
+
+
+reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform\Plugins\Objects\msft:rm/algorithm/hwid/4.0" /f ba02fed39662 /d %nul% || (
+call :dk_color %Red% "Checking SPP Registry Key               [Incorrect ModuleId Found]"
+set error=1
+)
+
+
+call :dk_actids
+if not defined applist (
+net stop sppsvc /y %nul%
+cscript //nologo %windir%\system32\slmgr.vbs /rilc %nul%
+if !errorlevel! NEQ 0 cscript //nologo %windir%\system32\slmgr.vbs /rilc %nul%
+call :dk_refresh
+call :dk_actids
+if not defined applist (
+set error=1
+call :dk_color %Red% "Checking Activation IDs                 [Not Found]"
+)
+)
+
+
+set tokenstore=
+for /f "skip=2 tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform" /v TokenStore 2^>nul') do call set "tokenstore=%%b"
+if not exist "%tokenstore%\" (
+set error=1
+call :dk_color %Red% "Checking SPP Token Folder               [Not Found] [%tokenstore%\]"
+)
+
+
+if exist "%tokenstore%\" if not exist "%tokenstore%\tokens.dat" (
+set error=1
+call :dk_color %Red% "Checking SPP tokens.dat                 [Not Found] [%tokenstore%\]"
+)
+
+
+if not exist %ProgramData%\Microsoft\Windows\ClipSVC\tokens.dat (
+set error=1
+call :dk_color %Red% "Checking ClipSVC tokens.dat             [Not Found]"
+)
+
+
+if not exist %SystemRoot%\system32\sppsvc.exe (
+set error=1
+call :dk_color %Red% "Checking sppsvc.exe File                [Not Found]"
+)
+
+
+::  Below checks are performed if required services are not disabled + slmgr /dlv errorlevel is not Zero + Rearm restart is not required + WMI is working fine
+
+set showfix=
+set wpaerror=
+set permerror=
+if not defined serv_cste if /i not %error_code%==0 if /i not %error_code%==0xC004D302 if not defined wmifailed (
+
+REM  This code checks for invalid registry keys in HKLM\SYSTEM\WPA. This issue may appear even on healthy systems.
+
+if %winbuild% GEQ 14393 (
+set /a count=0
+for /f %%a in ('reg query "HKLM\SYSTEM\WPA" 2^>nul') do set /a count+=1
+for /L %%# in (1,1,!count!) do (
+reg query "HKLM\SYSTEM\WPA\8DEC0AF1-0341-4b93-85CD-72606C2DF94C-7P-%%#" /ve /t REG_BINARY %nul% || set wpaerror=1
+)
+if defined wpaerror call :dk_color %Red% "Checking WPA Registry Keys              [Error Found] [Registry Count - !count!]"
+)
+
+REM  This code checks if NT SERVICE\sppsvc has permission access to tokens folder and required registry keys. It's often caused by gaming spoofers. 
+
+if not exist "%tokenstore%\" set permerror=1
+
+for %%# in (
+"%tokenstore%"
+"HKLM:\SYSTEM\WPA"
+"HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform"
+) do if not defined permerror (
+%psc% "$acl = Get-Acl '%%#'; if ($acl.Access.Where{ $_.IdentityReference -eq 'NT SERVICE\sppsvc' -and $_.AccessControlType -eq 'Deny' -or $acl.Access.IdentityReference -notcontains 'NT SERVICE\sppsvc'}) {Exit 2}" %nul%
+if !errorlevel!==2 set permerror=1
+)
+if defined permerror call :dk_color %Red% "Checking SPP Permissions                [Error Found]"
+
+set showfix=1
+call :dk_color %Magenta% "In MAS, Goto Troubleshoot and run Fix Licensing option."
+if not defined permerror call :dk_color %Magenta% "If activation still fails then run Fix WPA Registry option."
+)
+
 exit /b
 
 ::========================================================================================================================================
@@ -1080,38 +1254,39 @@ exit /b
 
 :hwiddata
 
+set f=
 for %%# in (
-8b351c9c-f398-4515-9900-09df49427262_XGVPP-NMH47-7TTHJ-W3FW7-8HV2C___4_X19-99683_0_OEM:NONSLP_Enterprise
-c83cef07-6b72-4bbc-a28f-a00386872839_3V6Q6-NQXCX-V8YXR-9QCYV-QPFCT__27_X19-98746_0_Volume:MAK_EnterpriseN
-4de7cb65-cdf1-4de9-8ae8-e3cce27b9f2c_VK7JG-NPHTM-C97JM-9MPGT-3V66T__48_X19-98841_0_____Retail_Professional
-9fbaf5d6-4d83-4422-870d-fdda6e5858aa_2B87N-8KFHP-DKV6R-Y2C8J-PKCKT__49_X19-98859_0_____Retail_ProfessionalN
-f742e4ff-909d-4fe9-aacb-3231d24a0c58_4CPRK-NM3K3-X6XXQ-RXX86-WXCHW__98_X19-98877_0_____Retail_CoreN
-1d1bac85-7365-4fea-949a-96978ec91ae0_N2434-X9D7W-8PF6X-8DV9T-8TYMD__99_X19-99652_0_____Retail_CoreCountrySpecific
-3ae2cc14-ab2d-41f4-972f-5e20142771dc_BT79Q-G7N6G-PGBYW-4YWX6-6F4BT_100_X19-99661_0_____Retail_CoreSingleLanguage
-2b1f36bb-c1cd-4306-bf5c-a0367c2d97d8_YTMG3-N6DKC-DKB77-7M9GH-8HVX7_101_X19-98868_0_____Retail_Core
-2a6137f3-75c0-4f26-8e3e-d83d802865a4_XKCNC-J26Q9-KFHD2-FKTHY-KD72Y_119_X19-99606_0_OEM:NONSLP_PPIPro
-e558417a-5123-4f6f-91e7-385c1c7ca9d4_YNMGQ-8RYV3-4PGQ3-C8XTP-7CFBY_121_X19-98886_0_____Retail_Education
-c5198a66-e435-4432-89cf-ec777c9d0352_84NGF-MHBT6-FXBX8-QWJK7-DRR8H_122_X19-98892_0_____Retail_EducationN
-cce9d2de-98ee-4ce2-8113-222620c64a27_KCNVH-YKWX8-GJJB9-H9FDT-6F7W2_125_X22-66075_1_Volume:MAK_EnterpriseS_VB
-d06934ee-5448-4fd1-964a-cd077618aa06_43TBQ-NH92J-XKTM7-KT3KK-P39PB_125_X21-83233_0_OEM:NONSLP_EnterpriseS_RS5
-706e0cfd-23f4-43bb-a9af-1a492b9f1302_NK96Y-D9CD8-W44CQ-R8YTK-DYJWX_125_X21-05035_0_OEM:NONSLP_EnterpriseS_RS1
-faa57748-75c8-40a2-b851-71ce92aa8b45_FWN7H-PF93Q-4GGP8-M8RF3-MDWWW_125_X19-99617_0_OEM:NONSLP_EnterpriseS_TH
-2c060131-0e43-4e01-adc1-cf5ad1100da8_RQFNW-9TPM3-JQ73T-QV4VQ-DV9PT_126_X22-66108_1_Volume:MAK_EnterpriseSN_VB
-e8f74caa-03fb-4839-8bcc-2e442b317e53_M33WV-NHY3C-R7FPM-BQGPT-239PG_126_X21-83264_1_Volume:MAK_EnterpriseSN_RS5
-3d1022d8-969f-4222-b54b-327f5a5af4c9_2DBW3-N2PJG-MVHW3-G7TDK-9HKR4_126_X21-04921_0_Volume:MAK_EnterpriseSN_RS1
-60c243e1-f90b-4a1b-ba89-387294948fb6_NTX6B-BRYC2-K6786-F6MVQ-M7V2X_126_X19-98770_0_Volume:MAK_EnterpriseSN_TH
-eb6d346f-1c60-4643-b960-40ec31596c45_DXG7C-N36C4-C4HTG-X4T3X-2YV77_161_X21-43626_0_____Retail_ProfessionalWorkstation
-89e87510-ba92-45f6-8329-3afa905e3e83_WYPNQ-8C467-V2W6J-TX4WX-WT2RQ_162_X21-43644_0_____Retail_ProfessionalWorkstationN
-62f0c100-9c53-4e02-b886-a3528ddfe7f6_8PTT6-RNW4C-6V7J2-C2D3X-MHBPB_164_X21-04955_0_____Retail_ProfessionalEducation
-13a38698-4a49-4b9e-8e83-98fe51110953_GJTYN-HDMQY-FRR76-HVGC7-QPF8P_165_X21-04956_0_____Retail_ProfessionalEducationN
-df96023b-dcd9-4be2-afa0-c6c871159ebe_NJCF7-PW8QT-3324D-688JX-2YV66_175_X21-41295_0_____Retail_ServerRdsh
-d4ef7282-3d2c-4cf0-9976-8854e64a8d1e_V3WVW-N2PV2-CGWC3-34QGF-VMJ2C_178_X21-32983_0_____Retail_Cloud
-af5c9381-9240-417d-8d35-eb40cd03e484_NH9J3-68WK7-6FB93-4K3DF-DJ4F6_179_X21-32987_0_____Retail_CloudN
-8ab9bdd1-1f67-4997-82d9-8878520837d9_XQQYW-NFFMW-XJPBH-K8732-CKFFD_188_X21-99378_0_____OEM:DM_IoTEnterprise
-ed655016-a9e8-4434-95d9-4345352c2552_QPM6N-7J2WJ-P88HH-P3YRH-YY74H_191_X21-99682_0_OEM:NONSLP_IoTEnterpriseS_VB
-d4bdc678-0a4b-4a32-a5b3-aaa24c3b0f24_K9VKN-3BGWV-Y624W-MCRMQ-BHDCD_202_X22-53884_0_____Retail_CloudEditionN
-92fb8726-92a8-4ffc-94ce-f82e07444653_KY7PN-VR6RX-83W6Y-6DDYQ-T6R4W_203_X22-53847_0_____Retail_CloudEdition
-d4f9b41f-205c-405e-8e08-3d16e88e02be_J7NJW-V6KBM-CC8RW-Y29Y4-HQ2MJ_205_X23-15027_0_OEM:NONSLP_IoTEnterpriseSK
+8b351c9c-f398-4515-9900-09df49427262_XGV%f%PP-NM%f%H47-7TT%f%HJ-W%f%3FW7-8H%f%V2C___4_X19-99683_0_OEM:NONSLP_Enterprise
+c83cef07-6b72-4bbc-a28f-a00386872839_3V6%f%Q6-NQ%f%XCX-V8Y%f%XR-9%f%QCYV-QP%f%FCT__27_X19-98746_0_Volume:MAK_EnterpriseN
+4de7cb65-cdf1-4de9-8ae8-e3cce27b9f2c_VK7%f%JG-NP%f%HTM-C97%f%JM-9%f%MPGT-3V%f%66T__48_X19-98841_0_____Retail_Professional
+9fbaf5d6-4d83-4422-870d-fdda6e5858aa_2B8%f%7N-8K%f%FHP-DKV%f%6R-Y%f%2C8J-PK%f%CKT__49_X19-98859_0_____Retail_ProfessionalN
+f742e4ff-909d-4fe9-aacb-3231d24a0c58_4CP%f%RK-NM%f%3K3-X6X%f%XQ-R%f%XX86-WX%f%CHW__98_X19-98877_0_____Retail_CoreN
+1d1bac85-7365-4fea-949a-96978ec91ae0_N24%f%34-X9%f%D7W-8PF%f%6X-8%f%DV9T-8T%f%YMD__99_X19-99652_0_____Retail_CoreCountrySpecific
+3ae2cc14-ab2d-41f4-972f-5e20142771dc_BT7%f%9Q-G7%f%N6G-PGB%f%YW-4%f%YWX6-6F%f%4BT_100_X19-99661_0_____Retail_CoreSingleLanguage
+2b1f36bb-c1cd-4306-bf5c-a0367c2d97d8_YTM%f%G3-N6%f%DKC-DKB%f%77-7%f%M9GH-8H%f%VX7_101_X19-98868_0_____Retail_Core
+2a6137f3-75c0-4f26-8e3e-d83d802865a4_XKC%f%NC-J2%f%6Q9-KFH%f%D2-F%f%KTHY-KD%f%72Y_119_X19-99606_0_OEM:NONSLP_PPIPro
+e558417a-5123-4f6f-91e7-385c1c7ca9d4_YNM%f%GQ-8R%f%YV3-4PG%f%Q3-C%f%8XTP-7C%f%FBY_121_X19-98886_0_____Retail_Education
+c5198a66-e435-4432-89cf-ec777c9d0352_84N%f%GF-MH%f%BT6-FXB%f%X8-Q%f%WJK7-DR%f%R8H_122_X19-98892_0_____Retail_EducationN
+cce9d2de-98ee-4ce2-8113-222620c64a27_KCN%f%VH-YK%f%WX8-GJJ%f%B9-H%f%9FDT-6F%f%7W2_125_X22-66075_1_Volume:MAK_EnterpriseS_VB
+d06934ee-5448-4fd1-964a-cd077618aa06_43T%f%BQ-NH%f%92J-XKT%f%M7-K%f%T3KK-P3%f%9PB_125_X21-83233_0_OEM:NONSLP_EnterpriseS_RS5
+706e0cfd-23f4-43bb-a9af-1a492b9f1302_NK9%f%6Y-D9%f%CD8-W44%f%CQ-R%f%8YTK-DY%f%JWX_125_X21-05035_0_OEM:NONSLP_EnterpriseS_RS1
+faa57748-75c8-40a2-b851-71ce92aa8b45_FWN%f%7H-PF%f%93Q-4GG%f%P8-M%f%8RF3-MD%f%WWW_125_X19-99617_0_OEM:NONSLP_EnterpriseS_TH
+2c060131-0e43-4e01-adc1-cf5ad1100da8_RQF%f%NW-9T%f%PM3-JQ7%f%3T-Q%f%V4VQ-DV%f%9PT_126_X22-66108_1_Volume:MAK_EnterpriseSN_VB
+e8f74caa-03fb-4839-8bcc-2e442b317e53_M33%f%WV-NH%f%Y3C-R7F%f%PM-B%f%QGPT-23%f%9PG_126_X21-83264_1_Volume:MAK_EnterpriseSN_RS5
+3d1022d8-969f-4222-b54b-327f5a5af4c9_2DB%f%W3-N2%f%PJG-MVH%f%W3-G%f%7TDK-9H%f%KR4_126_X21-04921_0_Volume:MAK_EnterpriseSN_RS1
+60c243e1-f90b-4a1b-ba89-387294948fb6_NTX%f%6B-BR%f%YC2-K67%f%86-F%f%6MVQ-M7%f%V2X_126_X19-98770_0_Volume:MAK_EnterpriseSN_TH
+eb6d346f-1c60-4643-b960-40ec31596c45_DXG%f%7C-N3%f%6C4-C4H%f%TG-X%f%4T3X-2Y%f%V77_161_X21-43626_0_____Retail_ProfessionalWorkstation
+89e87510-ba92-45f6-8329-3afa905e3e83_WYP%f%NQ-8C%f%467-V2W%f%6J-T%f%X4WX-WT%f%2RQ_162_X21-43644_0_____Retail_ProfessionalWorkstationN
+62f0c100-9c53-4e02-b886-a3528ddfe7f6_8PT%f%T6-RN%f%W4C-6V7%f%J2-C%f%2D3X-MH%f%BPB_164_X21-04955_0_____Retail_ProfessionalEducation
+13a38698-4a49-4b9e-8e83-98fe51110953_GJT%f%YN-HD%f%MQY-FRR%f%76-H%f%VGC7-QP%f%F8P_165_X21-04956_0_____Retail_ProfessionalEducationN
+df96023b-dcd9-4be2-afa0-c6c871159ebe_NJC%f%F7-PW%f%8QT-332%f%4D-6%f%88JX-2Y%f%V66_175_X21-41295_0_____Retail_ServerRdsh
+d4ef7282-3d2c-4cf0-9976-8854e64a8d1e_V3W%f%VW-N2%f%PV2-CGW%f%C3-3%f%4QGF-VM%f%J2C_178_X21-32983_0_____Retail_Cloud
+af5c9381-9240-417d-8d35-eb40cd03e484_NH9%f%J3-68%f%WK7-6FB%f%93-4%f%K3DF-DJ%f%4F6_179_X21-32987_0_____Retail_CloudN
+8ab9bdd1-1f67-4997-82d9-8878520837d9_XQQ%f%YW-NF%f%FMW-XJP%f%BH-K%f%8732-CK%f%FFD_188_X21-99378_0_____OEM:DM_IoTEnterprise
+ed655016-a9e8-4434-95d9-4345352c2552_QPM%f%6N-7J%f%2WJ-P88%f%HH-P%f%3YRH-YY%f%74H_191_X21-99682_0_OEM:NONSLP_IoTEnterpriseS_VB
+d4bdc678-0a4b-4a32-a5b3-aaa24c3b0f24_K9V%f%KN-3B%f%GWV-Y62%f%4W-M%f%CRMQ-BH%f%DCD_202_X22-53884_0_____Retail_CloudEditionN
+92fb8726-92a8-4ffc-94ce-f82e07444653_KY7%f%PN-VR%f%6RX-83W%f%6Y-6%f%DDYQ-T6%f%R4W_203_X22-53847_0_____Retail_CloudEdition
+d4f9b41f-205c-405e-8e08-3d16e88e02be_J7N%f%JW-V6%f%KBM-CC8%f%RW-Y%f%29Y4-HQ%f%2MJ_205_X23-15027_0_OEM:NONSLP_IoTEnterpriseSK
 ) do (
 for /f "tokens=1-9 delims=_" %%A in ("%%#") do (
 
@@ -1123,7 +1298,6 @@ if "%2"=="attempt1" if not defined key (
 echo "!applist!" | find /i "%%A" 1>nul && (
 if %%E==1 set notworking=1
 set key=%%B
-set pfn=Microsoft.Windows.%%C.%%D_8wekyb3d8bbwe
 )
 )
 
@@ -1135,12 +1309,10 @@ set 8th=%%H
 if not defined 8th (
 if %%E==1 set notworking=1
 set key=%%B
-set pfn=Microsoft.Windows.%%C.%%D_8wekyb3d8bbwe
 ) else (
 echo "%branch%" | find /i "%%H" 1>nul && (
 if %%E==1 set notworking=1
 set key=%%B
-set pfn=Microsoft.Windows.%%C.%%D_8wekyb3d8bbwe
 )
 )
 )
@@ -1171,9 +1343,9 @@ set notfoundaltactID=
 if %_NoEditionChange%==1 exit /b
 
 for %%# in (
-125_EnterpriseS-2021___________cce9d2de-98ee-4ce2-8113-222620c64a27_ed655016-a9e8-4434-95d9-4345352c2552_QPM6N-7J2WJ-P88HH-P3YRH-YY74H_IoTEnterpriseS-2021
-191_IoTEnterpriseS-Win11_______59eb965c-9150-42b7-a0ec-22151b9897c5_d4f9b41f-205c-405e-8e08-3d16e88e02be_J7NJW-V6KBM-CC8RW-Y29Y4-HQ2MJ_IoTEnterpriseSK-Win11
-138_ProfessionalSingleLanguage_a48938aa-62fa-4966-9d44-9f04da3f72f2_4de7cb65-cdf1-4de9-8ae8-e3cce27b9f2c_VK7JG-NPHTM-C97JM-9MPGT-3V66T_Professional
+125_EnterpriseS-2021___________cce9d2de-98ee-4ce2-8113-222620c64a27_ed655016-a9e8-4434-95d9-4345352c2552_QPM%f%6N-7J2%f%WJ-P8%f%8HH-P3Y%f%RH-YY%f%74H_IoTEnterpriseS-2021
+191_IoTEnterpriseS-Win11_______59eb965c-9150-42b7-a0ec-22151b9897c5_d4f9b41f-205c-405e-8e08-3d16e88e02be_J7N%f%JW-V6K%f%BM-CC%f%8RW-Y29%f%Y4-HQ%f%2MJ_IoTEnterpriseSK-Win11
+138_ProfessionalSingleLanguage_a48938aa-62fa-4966-9d44-9f04da3f72f2_4de7cb65-cdf1-4de9-8ae8-e3cce27b9f2c_VK7%f%JG-NPH%f%TM-C9%f%7JM-9MP%f%GT-3V%f%66T_Professional
 ) do (
 for /f "tokens=1-6 delims=_" %%A in ("%%#") do if %osSKU%==%%A (
 echo "!applist!" | find /i "%%C" 1>nul && (
@@ -1189,81 +1361,5 @@ set notfoundaltactID=1
 )
 )
 exit /b
-
-::========================================================================================================================================
-
-::  Script changes below values in official gatherosstate.exe so that it can generate usable ticket in Windows unlicensed state
-::  github.com/Gamers-Against-Weed/GamersOsState
-
-:hex:[
-$bytes  = [System.IO.File]::ReadAllBytes("gatherosstate.exe")
-$bytes[320] = 0xf8
-$bytes[321] = 0xfb
-$bytes[322] = 0x05
-$bytes[324] = 0x03
-$bytes[13672] = 0x25
-$bytes[13674] = 0x73
-$bytes[13676] = 0x3b
-$bytes[13678] = 0x00
-$bytes[13680] = 0x00
-$bytes[13682] = 0x00
-$bytes[13684] = 0x00
-$bytes[32748] = 0xe9
-$bytes[32749] = 0x9e
-$bytes[32750] = 0x00
-$bytes[32751] = 0x00
-$bytes[32752] = 0x00
-$bytes[32894] = 0x8b
-$bytes[32895] = 0x44
-$bytes[32897] = 0x64
-$bytes[32898] = 0x85
-$bytes[32899] = 0xc0
-$bytes[32900] = 0x0f
-$bytes[32901] = 0x85
-$bytes[32902] = 0x1c
-$bytes[32903] = 0x02
-$bytes[32904] = 0x00
-$bytes[32906] = 0xe9
-$bytes[32907] = 0x3c
-$bytes[32908] = 0x01
-$bytes[32909] = 0x00
-$bytes[32910] = 0x00
-$bytes[32911] = 0x85
-$bytes[32912] = 0xdb
-$bytes[32913] = 0x75
-$bytes[32914] = 0xeb
-$bytes[32915] = 0xe9
-$bytes[32916] = 0x69
-$bytes[32917] = 0xff
-$bytes[32918] = 0xff
-$bytes[32919] = 0xff
-$bytes[33094] = 0xe9
-$bytes[33095] = 0x80
-$bytes[33096] = 0x00
-$bytes[33097] = 0x00
-$bytes[33098] = 0x00
-$bytes[33449] = 0x64
-$bytes[33576] = 0x8d
-$bytes[33577] = 0x54
-$bytes[33579] = 0x24
-$bytes[33580] = 0xe9
-$bytes[33581] = 0x55
-$bytes[33582] = 0x01
-$bytes[33583] = 0x00
-$bytes[33584] = 0x00
-$bytes[33978] = 0xc3
-$bytes[34189] = 0x59
-$bytes[34190] = 0xeb
-$bytes[34191] = 0x28
-$bytes[34238] = 0xe9
-$bytes[34239] = 0x4f
-$bytes[34240] = 0x00
-$bytes[34241] = 0x00
-$bytes[34242] = 0x00
-$bytes[34346] = 0x24
-$bytes[34376] = 0xeb
-$bytes[34377] = 0x63
-[System.IO.File]::WriteAllBytes("gatherosstatemodified.exe", $bytes)
-:hex:]
 
 ::========================================================================================================================================
