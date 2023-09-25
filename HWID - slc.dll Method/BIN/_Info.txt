@@ -33,6 +33,6 @@
 
  - Source code available, you can build it in Visual Studio.
    https://app.box.com/s/y71tpcamofcg6zv6k7by6gaex6om3q4d
-   Check the file qxkqf\clientLockboxKey.zip for the source of used slc.dll here.
+   Check the file asdcorp\Integrated_Patcher_2\clientLockboxKey.zip for the source of used slc.dll here.
 
 ====================================================================================================
